@@ -62,19 +62,21 @@ export interface FoundSession {
  */
 export async function findSession(endpoint: string, credentials: BrowserStackCredentials, { build, sessionName }: SessionRef, signal: AbortSignal): Promise<FoundSession> {
   const auth = basicAuth(credentials);
-  const buildId = await findBuild(endpoint, auth, build, signal);
   const what = `BrowserStack session lookup in build ${JSON.stringify(build)}`;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const rows = await getRows(listUrl(`${endpoint}/builds/${encodeURIComponent(buildId)}/sessions.json`, page), auth, signal, what);
-    for (const row of rows) {
-      const session = asRecord(asRecord(row)?.['automation_session']);
-      const id = session?.['hashed_id'];
-      if (session?.['name'] === sessionName && typeof id === 'string' && id !== '') {
-        const video = session['video_url'];
-        return { id, startedAt: utcTimestamp(session['created_at']), videoUrl: typeof video === 'string' && isHttpUrl(video) ? video : undefined };
+  // Builds of different projects may share a name, as targets of one run do by default.
+  for (const buildId of await findBuilds(endpoint, auth, build, signal)) {
+    for (let page = 0; page < MAX_PAGES; page += 1) {
+      const rows = await getRows(listUrl(`${endpoint}/builds/${encodeURIComponent(buildId)}/sessions.json`, page), auth, signal, what);
+      for (const row of rows) {
+        const session = asRecord(asRecord(row)?.['automation_session']);
+        const id = session?.['hashed_id'];
+        if (session?.['name'] === sessionName && typeof id === 'string' && id !== '') {
+          const video = session['video_url'];
+          return { id, startedAt: utcTimestamp(session['created_at']), videoUrl: typeof video === 'string' && isHttpUrl(video) ? video : undefined };
+        }
       }
+      if (rows.length < PAGE_SIZE) break;
     }
-    if (rows.length < PAGE_SIZE) break;
   }
   throw new Error(`BrowserStack has no session named ${JSON.stringify(sessionName)} in build ${JSON.stringify(build)}`);
 }
@@ -101,18 +103,30 @@ function redact(message: string, url: string): string {
     .reduce((text, secret) => text.split(secret).join('<app URL>'), message);
 }
 
-/** The `hashed_id` of the newest build named `build`. */
-async function findBuild(endpoint: string, auth: string, build: string, signal: AbortSignal): Promise<string> {
+/** A transport error's message with `url` redacted, in place of the error itself. */
+function redactedError(cause: unknown, url: string): Error {
+  return new Error(redact(cause instanceof Error ? cause.message : String(cause), url));
+}
+
+/** An error saying `message`, caused by `cause`. */
+function withCause(message: string, cause: Error): Error {
+  return new Error(message, { cause });
+}
+
+/** The `hashed_id` of every build named `build`, newest first. */
+async function findBuilds(endpoint: string, auth: string, build: string, signal: AbortSignal): Promise<string[]> {
   const what = `BrowserStack build lookup for ${JSON.stringify(build)}`;
+  const ids: string[] = [];
   for (let page = 0; page < MAX_PAGES; page += 1) {
     const rows = await getRows(listUrl(`${endpoint}/builds.json`, page), auth, signal, what);
     for (const row of rows) {
       const found = asRecord(asRecord(row)?.['automation_build']);
       const id = found?.['hashed_id'];
-      if (found?.['name'] === build && typeof id === 'string' && id !== '') return id;
+      if (found?.['name'] === build && typeof id === 'string' && id !== '') ids.push(id);
     }
     if (rows.length < PAGE_SIZE) break;
   }
+  if (ids.length > 0) return ids;
   throw new Error(`BrowserStack has no build named ${JSON.stringify(build)}`);
 }
 
@@ -167,9 +181,10 @@ async function request(url: URL, auth: string, signal: AbortSignal, what: string
     });
     text = await response.text();
   } catch (cause) {
-    if (signal.aborted) throw new Error(`${what} cancelled`, { cause });
-    if (timeout.signal.aborted) throw new Error(`${what} got no answer within ${timeoutMs / 1000} s`, { cause });
-    throw new Error(`${what} failed: ${clean(cause instanceof Error ? cause.message : String(cause))}`, { cause });
+    const failure = signal.aborted ? 'cancelled' : timeout.signal.aborted ? `got no answer within ${timeoutMs / 1000} s` : `failed: ${clean(cause instanceof Error ? cause.message : String(cause))}`;
+    if (hide === undefined) throw new Error(`${what} ${failure}`, { cause });
+    // The error may carry the hidden URL in its own cause or properties, so only its redacted message is kept.
+    throw withCause(`${what} ${failure}`, redactedError(cause, hide));
   } finally {
     clearTimeout(timer);
   }

@@ -97,6 +97,13 @@ describe('browserstack().record()', () => {
     expect(new Set(api.calls.map(({ authorization }) => authorization))).toEqual(new Set([`Basic ${Buffer.from('ada:bs-key').toString('base64')}`]));
   });
 
+  it('finds the session in an older build of the same name, as another project of the run holds it', async () => {
+    api.sessions['B2'] = [];
+    const recording = await record();
+    expect(recording.startedAt).toBe('2026-10-20T08:00:00.000Z');
+    expect(api.calls.map(({ url }) => url.pathname)).toEqual(['/app-automate/builds.json', '/app-automate/builds/B2/sessions.json', '/app-automate/builds/B1/sessions.json']);
+  });
+
   it('reads further pages of builds until it finds the one named', async () => {
     api.builds = [...Array.from({ length: 50 }, (_, i) => ({ automation_build: { name: `other-${i}`, hashed_id: `X${i}` } })), ...api.builds];
     await expect(record()).resolves.toMatchObject({ startedAt: '2026-10-21T09:58:07.000Z' });
@@ -198,6 +205,16 @@ describe('uploadAppFromUrl()', () => {
     const error = await uploadAppFromUrl(API, { username: 'ada', accessKey: 'bs-key' }, signed, new AbortController().signal).then(() => new Error('resolved'), (cause: unknown) => cause as Error);
     expect(error.message).toBe('BrowserStack app upload from a URL failed: HTTP 422 (Could not download <app URL> (<app URL>))');
     expect(error.message).not.toContain('secret-signature');
+  });
+
+  it('keeps a signed app URL out of a transport error and its cause', async () => {
+    const { uploadAppFromUrl } = await import('../../src/sessions.ts');
+    const signed = 'https://bucket.example.com/app.apk?X-Amz-Signature=secret-signature';
+    vi.stubGlobal('fetch', async () => { throw new TypeError(`fetch failed for ${signed}`); });
+    const error = await uploadAppFromUrl(API, { username: 'ada', accessKey: 'bs-key' }, signed, new AbortController().signal).then(() => new Error('resolved'), (cause: unknown) => cause as Error);
+    expect(error.message).toBe('BrowserStack app upload from a URL failed: fetch failed for <app URL>');
+    expect(String((error.cause as Error).message)).toBe('fetch failed for <app URL>');
+    expect(JSON.stringify(error, Object.getOwnPropertyNames(error))).not.toContain('secret-signature');
   });
 });
 

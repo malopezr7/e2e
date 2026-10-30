@@ -258,6 +258,16 @@ describe('browserstack()', () => {
     expect(selectors().providerApp).toBe('bs://UPLOADED');
   });
 
+  it('leases nothing when the run is interrupted during the upload', async () => {
+    const controller = new AbortController();
+    mocks.upload.mockImplementationOnce(async () => {
+      controller.abort();
+      return 'bs://UPLOADED';
+    });
+    await expect(browserstack({ ...options, app: 'https://example.com/app.apk' }).acquire(request({ signal: controller.signal }))).rejects.toThrow();
+    expect(mocks.acquire).not.toHaveBeenCalled();
+  });
+
   it('passes a bs:// id or a local path through without uploading', async () => {
     await browserstack(options).acquire(request());
     await browserstack({ ...options, app: 'build/app.apk' }).acquire(request());
