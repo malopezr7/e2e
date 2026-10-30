@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import type { DriverRequest } from '../../src/driver.ts';
+import type { DriverRequest } from '../../src/lease/driver.ts';
 
 const mocks = vi.hoisted(() => ({ allocate: vi.fn(), create: vi.fn() }));
 vi.mock('agent-device', () => ({ createAgentDeviceClient: (config: unknown) => { mocks.create(config); return { leases: { allocate: mocks.allocate } }; } }));
@@ -7,7 +7,7 @@ afterEach(() => { vi.restoreAllMocks(); vi.resetModules(); });
 
 async function answer(request: DriverRequest): Promise<unknown> {
   const once = vi.spyOn(process, 'once');
-  await import('../../src/driver.ts');
+  await import('../../src/lease/driver.ts');
   const listener = once.mock.calls.find(([event]) => event === 'message')![1] as (request: DriverRequest) => void;
   process.removeListener('message', listener);
   let complete!: (message: unknown) => void;

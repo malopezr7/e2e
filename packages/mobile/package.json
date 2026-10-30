@@ -44,6 +44,10 @@
     "./tools": {
       "types": "./dist/tools.d.ts",
       "default": "./dist/tools.js"
+    },
+    "./lease": {
+      "types": "./dist/lease/index.d.ts",
+      "default": "./dist/lease/index.js"
     }
   },
   "files": [

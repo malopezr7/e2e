@@ -1,6 +1,6 @@
 import { createAgentDeviceClient, type LeaseAllocateOptions } from 'agent-device';
 
-/** A separate process gives each daemon its own credentials and plugin home without changing the runner's environment. */
+/** One lease allocation from the daemon in `stateDir`, run in its own process so the daemon gets that process's environment. */
 export interface DriverRequest {
   stateDir: string;
   allocate: LeaseAllocateOptions;

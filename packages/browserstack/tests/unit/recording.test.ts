@@ -10,12 +10,6 @@ import type { ProviderRecordContext } from 'e2e/engine';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { browserstack, type BrowserStackOptions } from '../../src/index.ts';
 
-vi.mock('agent-device', () => ({
-  createAgentDeviceClient: () => {
-    throw new Error('recording starts no daemon');
-  },
-}));
-
 const API = 'https://api-cloud.browserstack.com/app-automate';
 const VIDEO = 'https://app-automate.browserstack.com/sessions/S2/video?token=secret-token';
 const options: BrowserStackOptions = { device: 'Google Pixel 9', osVersion: '16.0', app: 'bs://APP1' };

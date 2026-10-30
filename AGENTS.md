@@ -85,6 +85,10 @@ suites that consume the built packages the way a user would.
   The `@e2e-dev/mobile/tools` subpath holds the agent-side `open_app`, `swipe`,
   and `alert` tools; focused-field typing uses the engine's keyboard grammar.
   The main entry never loads the AI SDK.
+  The `@e2e-dev/mobile/lease` subpath holds the agent-device lease plumbing
+  device-cloud providers (`testmu`, `browserstack`) share: one daemon per
+  slot, heartbeat, and a release that fails unless the session end is
+  confirmed.
 - `packages/kernel` - the published `@e2e-dev/kernel` package: Kernel hosted
   browsers for the web engine. An official integration with a hosted service
   is one package per service, named after it (`@e2e-dev/<service>`), with the

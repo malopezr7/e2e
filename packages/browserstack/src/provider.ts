@@ -5,14 +5,11 @@
  * which runs the session over BrowserStack's Appium hub.
  */
 
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
-import type { DeviceLease, DeviceProvider, DeviceReleaseContext, DeviceRequest } from '@e2e-dev/mobile';
+import { isAbsolute, resolve } from 'node:path';
+import type { DeviceLease, DeviceProvider, DeviceRequest } from '@e2e-dev/mobile';
+import { agentDeviceLeases, type LeaseSelectors } from '@e2e-dev/mobile/lease';
 import { ConfigurationError, rejectUnknownKeys, type ProviderRecordContext, type ProviderRecording } from 'e2e/engine';
 import { browserstackCredentials, type BrowserStackCredentials } from './credentials.ts';
-import { assertDriverVersion, startDriver, stopDriver } from './daemon.ts';
-import { LEASE_TTL_MS, startHeartbeat } from './heartbeat.ts';
 import { browserstackApiEndpoint, findSession, uploadAppFromUrl, type SessionRef } from './sessions.ts';
 
 /** agent-device's name for BrowserStack, as the lease provider and the tenant. */
@@ -27,7 +24,7 @@ const ORIENTATIONS: ReadonlySet<string> = new Set(['portrait', 'landscape']);
 interface OptionSpec {
   /** A string that must be given, a string when given, or a boolean when given. */
   readonly kind: 'required' | 'string' | 'boolean';
-  readonly leaseKey?: string;
+  readonly leaseKey?: Exclude<keyof LeaseSelectors, 'device'>;
 }
 
 /** Every option `browserstack()` takes, kept equal to `BrowserStackOptions` by the compiler. */
@@ -98,24 +95,6 @@ export interface BrowserStackOptions {
   readonly noResignApp?: boolean | undefined;
 }
 
-type LeaseBackend = 'ios-instance' | 'android-instance';
-/** One lease's daemon; `ended` once its stop confirmed the session ended, so a retried release only cleans up. */
-type Held = { dir: string; stateDir: string; env: NodeJS.ProcessEnv; stopHeartbeat?: () => Promise<void>; releasing?: Promise<void> | undefined; ended?: boolean };
-
-function driverEnv(env: DeviceRequest['env'], home: string, credentials: BrowserStackCredentials): NodeJS.ProcessEnv {
-  const result = { ...env };
-  // A user's daemon settings must not select a different daemon or connection profile.
-  for (const key of Object.keys(result)) {
-    // Keep the user's security policy on both the daemon and its clients.
-    if (key === 'AGENT_DEVICE_DAEMON_POLICY') continue;
-    if (key.startsWith('AGENT_DEVICE_')) delete result[key];
-  }
-  result.AGENT_DEVICE_HOME = home;
-  result.BROWSERSTACK_USERNAME = credentials.username;
-  result.BROWSERSTACK_ACCESS_KEY = credentials.accessKey;
-  return result;
-}
-
 /**
  * BrowserStack devices for `mobile({ device: browserstack({ device, osVersion, app }) })`:
  * one real device and isolated agent-device daemon per worker slot. The
@@ -127,7 +106,7 @@ export function browserstack(options: BrowserStackOptions): DeviceProvider {
     throw new ConfigurationError('INVALID_CONFIG', 'browserstack: options must be an object with `device`, `osVersion`, and `app`');
   }
   rejectUnknownKeys('browserstack()', options, Object.keys(OPTIONS));
-  const deviceFeatures: Record<string, string | boolean> = {};
+  const deviceFeatures: Record<string, unknown> = {};
   for (const [key, { kind, leaseKey }] of Object.entries(OPTIONS)) {
     const value: unknown = options[key as keyof BrowserStackOptions];
     checkOption(key, kind, value);
@@ -145,7 +124,7 @@ export function browserstack(options: BrowserStackOptions): DeviceProvider {
   }
   const noResignApp = options.noResignApp === true;
   const { device, osVersion, app, project, build, sessionName } = options;
-  const held = new Map<string, Held>();
+  const leases = agentDeviceLeases({ provider: PROVIDER, label: 'BrowserStack' });
   /**
    * The `https` build's upload for one run, API endpoint, and account, whose
    * `bs://` id every slot of that run shares. Anything else uploads again,
@@ -166,37 +145,16 @@ export function browserstack(options: BrowserStackOptions): DeviceProvider {
     return upload.id;
   }
 
-  /** One release per lease, shared by every caller; a failed one may be tried again. */
-  function release(id: string | undefined, resource: Held, signal: AbortSignal): Promise<void> {
-    resource.releasing ??= (async () => {
-      await resource.stopHeartbeat?.();
-      if (resource.ended !== true) {
-        await stopDriver(resource.stateDir, resource.env, id, signal);
-        resource.ended = true;
-      }
-      await rm(resource.dir, { recursive: true, force: true });
-      if (id !== undefined) held.delete(id);
-    })();
-    resource.releasing.catch(() => { resource.releasing = undefined; });
-    return resource.releasing;
-  }
-
   return {
     name: PROVIDER,
     async acquire(request: DeviceRequest): Promise<DeviceLease> {
-      assertDriverVersion(request.agentDeviceVersion);
       if (request.appPath !== undefined) throw new Error("BrowserStack installs the app from `app`; leave the target's `app.appPath` out");
       if (noResignApp && request.platform !== 'ios') throw new ConfigurationError('INVALID_CONFIG', 'browserstack: `noResignApp` applies to iOS only');
       const credentials = browserstackCredentials(request.env);
       request.signal.throwIfAborted();
       const appId = await providerApp(request, credentials);
       request.signal.throwIfAborted();
-      const dir = await mkdtemp(join(tmpdir(), 'e2e-browserstack-'));
-      const resource: Held = { dir, stateDir: join(dir, 'state'), env: driverEnv(request.env, join(dir, 'home'), credentials) };
-      const leaseBackend: LeaseBackend = request.platform === 'ios' ? 'ios-instance' : 'android-instance';
       const selectors = {
-        platform: request.platform,
-        target: 'mobile' as const,
         device,
         providerOsVersion: osVersion,
         providerApp: appId,
@@ -204,46 +162,15 @@ export function browserstack(options: BrowserStackOptions): DeviceProvider {
         providerBuild: build ?? request.runId,
         providerSessionName: slotSessionName(sessionName, request),
         ...deviceFeatures,
-      };
-      let id: string | undefined;
-      try {
-        const grant = await startDriver({
-          stateDir: resource.stateDir,
-          allocate: {
-            tenant: PROVIDER,
-            runId: request.runId,
-            leaseBackend,
-            leaseProvider: PROVIDER,
-            ttlMs: LEASE_TTL_MS,
-            // Retain the provider lease when closeApp or cleanup closes the engine session.
-            // The provider releases the lease at run end.
-            retainOnClose: true,
-            ...selectors,
-          },
-        }, resource.env);
-        id = grant.leaseId;
-        held.set(id, resource);
-        if (request.signal.aborted) throw new Error('cancelled');
-        if (!grant.retainOnClose) throw new Error('agent-device did not acknowledge retainOnClose. Closing the engine session could end the BrowserStack lease before run-end release');
-        const scope = { tenant: grant.tenantId, runId: grant.runId, leaseId: grant.leaseId, leaseBackend, leaseProvider: PROVIDER };
-        resource.stopHeartbeat = await startHeartbeat(resource.stateDir, scope, request.log);
-        request.log(`lease ${id}: ${device}, ${request.platform} ${osVersion}; session ${selectors.providerSessionName} reserved`);
-        // The worker's client is created with these fields: the scope picks the lease, and the selectors match the session it holds.
-        return { id, client: { stateDir: resource.stateDir, ...scope, ...selectors } };
-      } catch (cause) {
-        // The engine releases only leases `acquire` returned.
-        try {
-          await release(id, resource, AbortSignal.timeout(30_000));
-        } catch (cleanup) {
-          throw new AggregateError([cause, cleanup], `BrowserStack lease failed: ${messageOf(cause)}; cleanup also failed: ${messageOf(cleanup)}`, { cause: cleanup });
-        }
-        throw cause;
-      }
+      } satisfies LeaseSelectors;
+      const lease = await leases.acquire(request, {
+        env: { BROWSERSTACK_USERNAME: credentials.username, BROWSERSTACK_ACCESS_KEY: credentials.accessKey },
+        selectors,
+      });
+      request.log(`lease ${lease.id}: ${device}, ${request.platform} ${osVersion}; session ${selectors.providerSessionName} reserved`);
+      return lease;
     },
-    async release(lease: DeviceLease, context: DeviceReleaseContext): Promise<void> {
-      const resource = held.get(lease.id);
-      if (resource) await release(lease.id, resource, context.signal);
-    },
+    release: (lease, context) => leases.release(lease, context),
     // Runs in the worker, from the lease alone. BrowserStack records the whole session, so its video starts when the session did.
     async record(lease: DeviceLease, context: ProviderRecordContext): Promise<ProviderRecording> {
       const calledAt = new Date().toISOString();
@@ -300,8 +227,4 @@ function sessionRef({ client }: DeviceLease): SessionRef | undefined {
   const sessionName = client?.providerSessionName;
   if (typeof build !== 'string' || build === '' || typeof sessionName !== 'string' || sessionName === '') return undefined;
   return { build, sessionName };
-}
-
-function messageOf(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }
