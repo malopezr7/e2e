@@ -141,7 +141,13 @@ export function browserstack(options: BrowserStackOptions): DeviceProvider {
     const upload = { key, id: uploadAppFromUrl(endpoint, credentials, app, request.signal) };
     uploaded = upload;
     // The URL may carry a signed token, so the log names the upload by its id only.
-    upload.id.then((id) => request.log(`uploaded the app URL as ${id}`), () => { if (uploaded === upload) uploaded = undefined; });
+    upload.id.then((id) => {
+      try {
+        request.log(`uploaded the app URL as ${id}`);
+      } catch {
+        // The run's log may be closed by now.
+      }
+    }, () => { if (uploaded === upload) uploaded = undefined; });
     return upload.id;
   }
 
@@ -163,12 +169,11 @@ export function browserstack(options: BrowserStackOptions): DeviceProvider {
         providerSessionName: slotSessionName(sessionName, request),
         ...deviceFeatures,
       } satisfies LeaseSelectors;
-      const lease = await leases.acquire(request, {
+      return leases.acquire(request, {
         env: { BROWSERSTACK_USERNAME: credentials.username, BROWSERSTACK_ACCESS_KEY: credentials.accessKey },
         selectors,
+        summary: `${device}, ${request.platform} ${osVersion}; session ${selectors.providerSessionName} reserved`,
       });
-      request.log(`lease ${lease.id}: ${device}, ${request.platform} ${osVersion}; session ${selectors.providerSessionName} reserved`);
-      return lease;
     },
     release: (lease, context) => leases.release(lease, context),
     // Runs in the worker, from the lease alone. BrowserStack records the whole session, so its video starts when the session did.

@@ -32,6 +32,7 @@ const env = { PATH: '/bin' };
 const allocation: AgentDeviceLeaseRequest = {
   env: { CLOUD_USERNAME: 'ada', CLOUD_ACCESS_KEY: 'cloud-key' },
   selectors: { device: 'Google Pixel 9', providerOsVersion: '16.0', providerApp: 'cloud://APP0' },
+  summary: 'Google Pixel 9, android 16.0',
 };
 
 beforeEach(() => {
@@ -116,6 +117,18 @@ describe('agentDeviceLeases()', () => {
     expect(mocks.heartbeat).toHaveBeenCalledWith(driver().stateDir, { tenant: 'cloud', runId: 'run-1', leaseId: 'lease-1', leaseBackend: 'android-instance', leaseProvider: 'cloud' }, req.log);
   });
 
+  it('logs the granted lease with its summary', async () => {
+    const lines: string[] = [];
+    await leases().acquire(request({ log: (line) => lines.push(line) }), allocation);
+    expect(lines).toEqual(['lease lease-1: Google Pixel 9, android 16.0']);
+  });
+
+  it('releases a granted lease when the run\'s log throws, instead of losing it', async () => {
+    await expect(leases().acquire(request({ log: () => { throw new Error('log closed'); } }), allocation)).rejects.toThrow('log closed');
+    expect(mocks.stop).toHaveBeenCalledWith(driver().stateDir, driverEnv(), 'lease-1', 'Cloud', expect.any(AbortSignal));
+    expect(mocks.stopHeartbeat).toHaveBeenCalledTimes(1);
+  });
+
   it("gives each lease's daemon its own state, agent-device home, and the service's env, and never mutates process.env", async () => {
     const before = { ...process.env };
     const provider = leases();
@@ -127,6 +140,13 @@ describe('agentDeviceLeases()', () => {
     expect(driverEnv(0).AGENT_DEVICE_STATE_DIR).toBeUndefined();
     expect(driverEnv(0).AGENT_DEVICE_HOME).toBe(join(driver(0).stateDir, '..', 'home'));
     expect(process.env).toEqual(before);
+  });
+
+  it("drops agent-device daemon settings from the service's env too, so it can't pick another daemon or home", async () => {
+    await leases().acquire(request(), { ...allocation, env: { ...allocation.env, AGENT_DEVICE_HOME: '/foreign-home', AGENT_DEVICE_DAEMON_BASE_URL: 'http://foreign' } });
+    expect(driverEnv().AGENT_DEVICE_HOME).toBe(join(driver().stateDir, '..', 'home'));
+    expect(driverEnv().AGENT_DEVICE_DAEMON_BASE_URL).toBeUndefined();
+    expect(driverEnv()).toMatchObject({ CLOUD_USERNAME: 'ada' });
   });
 
   it("prepares the daemon's home before it starts", async () => {

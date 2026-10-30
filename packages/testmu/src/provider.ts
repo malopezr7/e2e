@@ -142,13 +142,12 @@ export function testmu(options: TestmuOptions): DeviceProvider {
         providerSessionName: slotSessionName(sessionName, request),
         ...deviceFeatures,
       } satisfies LeaseSelectors;
-      const lease = await leases.acquire(request, {
+      return leases.acquire(request, {
         env: { LT_USERNAME: credentials.username, LT_ACCESS_KEY: credentials.accessKey },
         selectors,
+        summary: `${device}, ${request.platform} ${osVersion} (${deviceType}); session ${selectors.providerSessionName} started`,
         prepareHome: installPlugin,
       });
-      request.log(`lease ${lease.id}: ${device}, ${request.platform} ${osVersion} (${deviceType}); session ${selectors.providerSessionName} started`);
-      return lease;
     },
     release: (lease, context) => leases.release(lease, context),
     // Runs in the worker, from the lease alone. TestMu AI records the whole session, so its video starts when the session did.

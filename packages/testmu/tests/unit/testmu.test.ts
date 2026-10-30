@@ -77,13 +77,14 @@ describe('testmu()', () => {
     expect(mocks.acquire).not.toHaveBeenCalled();
   });
 
-  it("leases with the device selectors, dashboard labels, the run's credentials, and the plugin in the daemon's home, and logs the session", async () => {
+  it("leases with the device selectors, dashboard labels, the run's credentials, the plugin in the daemon's home, and a summary of the session", async () => {
     const provider = testmu(options);
     const req = request({ slot: 1 });
     const lease = await provider.acquire(req);
     expect(mocks.acquire).toHaveBeenCalledWith(req, expect.anything());
     expect(leased()).toEqual({
       env: { LT_USERNAME: 'ada', LT_ACCESS_KEY: 'lt-key' },
+      summary: 'Galaxy S22 Ultra 5G, android 14 (virtual); session e2e-run-1-android-2 started',
       prepareHome: mocks.install,
       selectors: {
         device: 'Galaxy S22 Ultra 5G',
@@ -95,7 +96,6 @@ describe('testmu()', () => {
         providerSessionName: 'e2e-run-1-android-2',
       },
     });
-    expect(req.lines).toEqual(['lease lease-1: Galaxy S22 Ultra 5G, android 14 (virtual); session e2e-run-1-android-2 started']);
     await provider.release(lease, context);
     expect(mocks.release).toHaveBeenCalledWith(lease, context);
   });

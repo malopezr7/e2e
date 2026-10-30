@@ -33,6 +33,8 @@ export interface AgentDeviceLeaseRequest {
   readonly env: Readonly<Record<string, string>>;
   /** Allocated with the lease and put on its `client`, so the worker's session matches it. */
   readonly selectors: LeaseSelectors;
+  /** What the progress line names once the lease is granted, after `lease <id>: `. */
+  readonly summary: string;
   /** Runs on the daemon's empty agent-device home before it starts, to install a plugin there. */
   readonly prepareHome?: ((home: string) => Promise<void>) | undefined;
 }
@@ -79,11 +81,11 @@ export function agentDeviceLeases({ provider, label }: AgentDeviceLeaseOptions):
   }
 
   return {
-    async acquire(request, { env, selectors, prepareHome }) {
+    async acquire(request, { env, selectors, summary, prepareHome }) {
       request.signal.throwIfAborted();
       const dir = await mkdtemp(join(tmpdir(), `e2e-${provider}-`));
       const home = join(dir, 'home');
-      const resource: Held = { dir, stateDir: join(dir, 'state'), env: { ...daemonEnv(request.env, home), ...env } };
+      const resource: Held = { dir, stateDir: join(dir, 'state'), env: daemonEnv({ ...request.env, ...env }, home) };
       const leaseBackend: 'ios-instance' | 'android-instance' = request.platform === 'ios' ? 'ios-instance' : 'android-instance';
       const allocated = { platform: request.platform, target: 'mobile' as const, ...selectors };
       let id: string | undefined;
@@ -109,6 +111,7 @@ export function agentDeviceLeases({ provider, label }: AgentDeviceLeaseOptions):
         if (!grant.retainOnClose) throw new Error(`agent-device did not acknowledge retainOnClose. Closing the engine session could end the ${label} lease before run-end release`);
         const scope = { tenant: grant.tenantId, runId: grant.runId, leaseId: grant.leaseId, leaseBackend, leaseProvider: provider };
         resource.stopHeartbeat = await startHeartbeat(resource.stateDir, scope, request.log);
+        request.log(`lease ${id}: ${summary}`);
         // The worker's client is created with these fields: the scope picks the lease, and the selectors match the session it holds.
         return { id, client: { stateDir: resource.stateDir, ...scope, ...allocated } };
       } catch (cause) {
@@ -128,7 +131,7 @@ export function agentDeviceLeases({ provider, label }: AgentDeviceLeaseOptions):
   };
 }
 
-/** The run's environment for a daemon in `home`: a user's daemon settings must not select a different daemon, home, or connection profile. */
+/** `env` for a daemon in `home`: no daemon setting in it may select a different daemon, home, or connection profile. */
 function daemonEnv(env: DeviceRequest['env'], home: string): NodeJS.ProcessEnv {
   const result = { ...env };
   for (const key of Object.keys(result)) {

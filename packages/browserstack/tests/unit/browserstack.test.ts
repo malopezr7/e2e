@@ -69,13 +69,14 @@ describe('browserstack()', () => {
     expect(mocks.leases).toHaveBeenCalledWith({ provider: 'browserstack', label: 'BrowserStack' });
   });
 
-  it('leases with the device selectors, dashboard labels, and the run\'s credentials, and logs the session', async () => {
+  it('leases with the device selectors, dashboard labels, the run\'s credentials, and a summary of the session', async () => {
     const provider = browserstack(options);
     const req = request({ slot: 1 });
     const lease = await provider.acquire(req);
     expect(mocks.acquire).toHaveBeenCalledWith(req, expect.anything());
     expect(leased()).toEqual({
       env: { BROWSERSTACK_USERNAME: 'ada', BROWSERSTACK_ACCESS_KEY: 'bs-key' },
+      summary: 'Google Pixel 9, android 16.0; session e2e-run-1-android-2 reserved',
       selectors: {
         device: 'Google Pixel 9',
         providerOsVersion: '16.0',
@@ -85,7 +86,6 @@ describe('browserstack()', () => {
         providerSessionName: 'e2e-run-1-android-2',
       },
     });
-    expect(req.lines).toEqual(['lease lease-1: Google Pixel 9, android 16.0; session e2e-run-1-android-2 reserved']);
     await provider.release(lease, context);
     expect(mocks.release).toHaveBeenCalledWith(lease, context);
   });
@@ -220,6 +220,20 @@ describe('browserstack()', () => {
     expect([selectors(0).providerApp, selectors(1).providerApp]).toEqual(['bs://UPLOADED', 'bs://UPLOADED']);
     expect(req.lines).toContain('uploaded the app URL as bs://UPLOADED');
     expect(req.lines.join('\n')).not.toContain('example.com');
+  });
+
+  it('keeps leasing when the run\'s log throws on the upload line', async () => {
+    const provider = browserstack({ ...options, app: 'https://example.com/app.apk' });
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    try {
+      await provider.acquire(request({ log: () => { throw new Error('log closed'); } }));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).not.toHaveBeenCalled();
+      expect(selectors().providerApp).toBe('bs://UPLOADED');
+    } finally {
+      process.off('unhandledRejection', unhandled);
+    }
   });
 
   it('uploads an https build again for the next run, and for another account or API endpoint', async () => {

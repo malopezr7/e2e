@@ -327,9 +327,6 @@ importers:
       '@types/node':
         specifier: 26.6.5
         version: 26.6.5
-      agent-device:
-        specifier: 0.21.35
-        version: 0.21.35(ai@7.0.153(zod@4.6.7))
       ai:
         specifier: 7.0.153
         version: 7.0.153(zod@4.6.7)
